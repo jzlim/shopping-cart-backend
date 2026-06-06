@@ -50,7 +50,11 @@ describe('AddItemToCart use case', () => {
 
   it('persists the updated cart to the repository', async () => {
     const { useCase, carts } = makeUseCase();
-    await useCase.execute({ sessionId: 's1', productId: 'prod-usd', quantity: 1 });
+    await useCase.execute({
+      sessionId: 's1',
+      productId: 'prod-usd',
+      quantity: 1,
+    });
     const stored = await carts.findBySessionId('s1');
     expect(stored?.items).toHaveLength(1);
   });
@@ -64,7 +68,11 @@ describe('AddItemToCart use case', () => {
 
   it('enforces a single currency per cart across catalog-resolved items', async () => {
     const { useCase } = makeUseCase();
-    await useCase.execute({ sessionId: 's1', productId: 'prod-usd', quantity: 1 });
+    await useCase.execute({
+      sessionId: 's1',
+      productId: 'prod-usd',
+      quantity: 1,
+    });
     await expect(
       useCase.execute({ sessionId: 's1', productId: 'prod-myr', quantity: 1 }),
     ).rejects.toThrow(CurrencyMismatchError);
