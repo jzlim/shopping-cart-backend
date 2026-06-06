@@ -1,0 +1,144 @@
+# CD — runs on every push to main (i.e. when a PR is merged).
+#
+# Two jobs, run in sequence:
+#
+#   build-and-push   build the prod image and push it to the GitHub Container
+#                    Registry (GHCR), tagged with the commit SHA and `latest`
+#   deploy           depends on build-and-push; documents how the image would be
+#                    rolled out to the Terraform-defined ECS Fargate service
+#
+# The deploy step is intentionally a DOCUMENTED dry-run: this assessment does not
+# provision live AWS infrastructure (see infra/terraform — knowledge demo only),
+# so the real `aws` commands are shown but not executed. Everything needed to make
+# it live is present and commented (conceptually).
+
+name: CD
+
+# Fires when commits land on main — which, with the PR-based flow, means "on merge".
+on:
+  push:
+    branches: [main]
+
+# Don't cancel an in-flight deployment if another push arrives; let it finish.
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+env:
+  # GHCR image name. github.repository is "<owner>/<repo>"; metadata-action
+  # lowercases it (GHCR requires lowercase).
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the production image once and push it to GHCR with two tags:
+  #   - the full commit SHA (immutable, traceable — what deploy references)
+  #   - `latest` (convenience pointer to the newest main build)
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+
+    # Permissions this job's GITHUB_TOKEN needs:
+    permissions:
+      contents: read # check out the repo
+      packages: write # push to GHCR
+
+    # Expose the immutable commit-SHA tag to the deploy job. Deliberately NOT
+    # steps.meta.outputs.version: that returns the highest-priority tag, which is
+    # `latest` (raw outranks sha by default) — deploy must pin the exact SHA.
+    # `sha-<sha>` matches the tag produced by `type=sha,format=long` below.
+    outputs:
+      image-tag: sha-${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log in to GHCR using the token GitHub injects automatically — no manually
+      # managed secret needed for the registry.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Generate tags + OCI labels from git metadata.
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      # Build the lean single-platform prod image and push it. Layer cache is
+      # shared with CI via type=gha, so unchanged layers aren't rebuilt.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/prod/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Same scope as CI's prod build — reuses those layers instead of rebuilding.
+          cache-from: type=gha,scope=prod
+          cache-to: type=gha,scope=prod,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Deploy — DOCUMENTED dry-run. Shows exactly how the pushed image would roll out
+  # to the ECS Fargate service defined in infra/terraform. The real AWS steps are
+  # present but commented; the echo steps print the deployment plan so the run is
+  # green and the flow is visible in the Actions log.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to ECS (documented)
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deployment plan
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.image-tag }}
+        run: |
+          echo "Image built and pushed: $IMAGE_REF"
+          echo ""
+          echo "How this would deploy to the Terraform-defined ECS Fargate service:"
+          echo "  1. Assume an AWS deploy role via OIDC (no long-lived keys)."
+          echo "  2. Register a new ECS task definition revision pointing at \$IMAGE_REF."
+          echo "  3. Update the ECS service to the new revision and force a new deployment."
+          echo "  4. Wait for the service to reach a steady state, then verify /health."
+          echo ""
+          echo "Cluster/service/task names come from infra/terraform outputs"
+          echo "(ecs_cluster_name, ecs_service_name) — single source of truth."
+
+      # --- The real deployment, commented out (no live infra in this assessment) ---
+      #
+      # - name: Configure AWS credentials (OIDC — no stored keys)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      #
+      # - name: Force a new ECS deployment with the new image
+      #   env:
+      #     IMAGE_REF: ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.image-tag }}
+      #   run: |
+      #     # Pull current task def from Terraform output, swap in the new image,
+      #     # register a new revision, and point the service at it:
+      #     aws ecs update-service \
+      #       --cluster   "$(terraform -chdir=infra/terraform output -raw ecs_cluster_name)" \
+      #       --service   "$(terraform -chdir=infra/terraform output -raw ecs_service_name)" \
+      #       --force-new-deployment
+      #
+      #     aws ecs wait services-stable \
+      #       --cluster "$(terraform -chdir=infra/terraform output -raw ecs_cluster_name)" \
+      #       --services "$(terraform -chdir=infra/terraform output -raw ecs_service_name)"
