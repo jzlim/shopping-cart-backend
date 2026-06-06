@@ -34,6 +34,12 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# The base image bundles the npm CLI, whose own transitive deps (cross-spawn,
+# glob, minimatch, tar) carry HIGH CVEs that Trivy flags. The runtime only ever
+# invokes `node` (see CMD) — npm is never used here — so removing it cuts that
+# attack surface entirely and clears the image scan.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 # node:alpine ships a non-root `node` user (uid 1000). Own the files with it and
 # drop privileges — a compromised process never runs as root.
 COPY --from=deps    --chown=node:node /app/node_modules ./node_modules

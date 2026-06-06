@@ -1,0 +1,168 @@
+# CI — runs on every pull request targeting main.
+#
+# Five jobs run IN PARALLEL (none "needs" another), so a failure in any one
+# surfaces fast without waiting for the others:
+#
+#   lint        ESLint + Prettier
+#   type-check  tsc --noEmit
+#   test        vitest with coverage (gates >70% on the domain layer)
+#   build       builds & Trivy-scans the prod image; build-validates the ci image
+#   security    npm audit on production dependencies
+#
+# The lint/type-check/test jobs run directly on the GitHub-hosted runner (fast,
+# with the npm cache). The build job exercises the Dockerfiles themselves.
+
+name: CI
+
+# When this runs: a pull request opened or updated against main triggers the whole
+# workflow. (A push to a feature branch alone won't trigger it until a PR exists; a
+# direct push to main runs CD, not this — see cd.yml.)
+on:
+  pull_request:
+    branches: [main]
+
+# If you push again to the same PR while a run is in progress, cancel the old run
+# instead of stacking up duplicate runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # ESLint + Prettier. Catches style/quality issues and any lint-level errors.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm # caches ~/.npm keyed on package-lock.json — speeds up `npm ci`
+
+      - run: npm ci # clean, reproducible install from the lockfile
+      - run: npm run lint
+      - run: npm run format:check
+
+  # ---------------------------------------------------------------------------
+  # TypeScript type-check only (no emit). Verifies the code compiles type-safely.
+  # ---------------------------------------------------------------------------
+  type-check:
+    name: Type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+
+  # ---------------------------------------------------------------------------
+  # Unit tests + coverage. `test:coverage` fails the job automatically if domain
+  # coverage falls below the 70% thresholds defined in vitest.config.ts.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run test:coverage
+
+      # Keep the HTML/lcov coverage report as a downloadable artifact on the run.
+      - name: Upload coverage report
+        if: always() # upload even if the threshold check failed, so it can be inspected
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Builds the Docker images to prove the Dockerfiles are valid, then scans the
+  # production image for known OS/library vulnerabilities with Trivy.
+  # Docker layer caching (type=gha) reuses layers across runs.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build & image scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3 # enables BuildKit + the gha layer cache
+
+      # Build the production image and load it into the runner's Docker so Trivy
+      # can scan it. Pinned to one platform with no attestations so it's the lean
+      # single-platform artifact (matches how CD builds it).
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/prod/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          load: true # make the image available locally (not pushed anywhere)
+          tags: cart-api:ci-${{ github.sha }}
+          # Same scope as CD's prod build, so the prod layers form one shared cache.
+          cache-from: type=gha,scope=prod
+          cache-to: type=gha,scope=prod,mode=max
+
+      # Validate that the CI Dockerfile still builds. This only confirms
+      # buildability — it does NOT run the test suite, because a build never
+      # executes the image's CMD. The actual tests run in the `test` job on the
+      # runner; this image is a pinned environment one *could* run identical
+      # checks in locally (e.g. `docker run ... npm run test:coverage`).
+      - name: Validate CI Dockerfile builds
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/ci/Dockerfile
+          load: true
+          tags: cart-api:ci-image-${{ github.sha }}
+          # Separate scope so the ci-image cache can't evict the prod-image cache.
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,scope=ci,mode=max
+
+      - name: Scan production image (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: cart-api:ci-${{ github.sha }}
+          severity: CRITICAL,HIGH # only fail on serious findings
+          ignore-unfixed: true # don't fail on CVEs that have no fix available yet
+          exit-code: '1' # fail the job if a fixable CRITICAL/HIGH is found
+
+  # ---------------------------------------------------------------------------
+  # Dependency vulnerability audit. Scoped to production deps (--omit=dev): the
+  # known advisories here are all in the dev-only vitest/esbuild chain and never
+  # ship in the image, so auditing prod deps keeps the gate honest.
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
