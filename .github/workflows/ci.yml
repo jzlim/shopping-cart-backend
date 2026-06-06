@@ -140,7 +140,7 @@ jobs:
           cache-to: type=gha,scope=ci,mode=max
 
       - name: Scan production image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: cart-api:ci-${{ github.sha }}
           severity: CRITICAL,HIGH # only fail on serious findings
