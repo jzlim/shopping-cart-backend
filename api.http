@@ -1,0 +1,113 @@
+### Shopping Cart API — manual endpoint tests
+#
+# Usage:
+#   VS Code  -> install the "REST Client" extension, then click "Send Request"
+#              above each request block.
+#   JetBrains -> open this file and click the green ▶ gutter icon.
+#
+# Start the server first:  npm run dev   (port 3000, hot reload)
+#
+# Money is in integer MINOR units (cents): 7999 = $79.99.
+# A cart is created lazily on first add; :itemId in DELETE is the productId.
+
+@host = http://localhost:3000
+@sessionId = demo-session-1
+
+### Health check
+GET {{host}}/health
+
+### Get cart (empty) — returns an empty cart, not 404
+GET {{host}}/api/cart/{{sessionId}}
+
+### Add a keyboard (qty 2)  -> 201, total 15998
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "productId": "prod-keyboard",
+  "quantity": 2
+}
+
+### Add a mouse (qty 1)  -> total 18997
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "productId": "prod-mouse",
+  "quantity": 1
+}
+
+### Add the same keyboard again (qty 1) -> merges to qty 3, NOT a new line
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "productId": "prod-keyboard",
+  "quantity": 1
+}
+
+### Get cart (populated)
+GET {{host}}/api/cart/{{sessionId}}
+
+### Remove the mouse (itemId === productId)
+DELETE {{host}}/api/cart/{{sessionId}}/items/prod-mouse
+
+### Checkout -> 200 with order summary, then cart is cleared
+POST {{host}}/api/cart/{{sessionId}}/checkout
+
+### Get cart after checkout -> empty again
+GET {{host}}/api/cart/{{sessionId}}
+
+
+# ─────────────────────────────────────────────────────────────
+#  Error cases
+# ─────────────────────────────────────────────────────────────
+
+### Unknown product -> 404 ProductNotFoundError
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "productId": "prod-does-not-exist",
+  "quantity": 1
+}
+
+### Invalid quantity (zero) -> 400 ValidationError (Zod)
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "productId": "prod-keyboard",
+  "quantity": 0
+}
+
+### Invalid quantity (non-integer) -> 400 ValidationError (Zod)
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "productId": "prod-keyboard",
+  "quantity": 1.5
+}
+
+### Missing productId -> 400 ValidationError (Zod)
+POST {{host}}/api/cart/{{sessionId}}/items
+Content-Type: application/json
+
+{
+  "quantity": 1
+}
+
+### Currency mismatch -> 409 CurrencyMismatchError
+# Not reachable via the API: the default catalog seed is single-currency (USD) by
+# design. The mismatch path is covered in tests, where a catalog is seeded with an
+# off-currency product — see src/usecases/AddItemToCart.spec.ts.
+
+### Remove an item that isn't in the cart -> 404 ItemNotFoundError
+DELETE {{host}}/api/cart/{{sessionId}}/items/prod-headset
+
+### Checkout an empty cart -> 409 EmptyCartError
+POST {{host}}/api/cart/empty-session/checkout
+
+### Unknown route -> 404 NotFound
+GET {{host}}/api/unknown
