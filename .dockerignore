@@ -1,0 +1,25 @@
+# Keep the Docker build context small and deterministic. Anything the image
+# builds itself (node_modules, dist) or that is irrelevant at build time is
+# excluded so it can never leak into a layer or bust the build cache.
+
+node_modules
+dist
+coverage
+*.lcov
+
+.git
+.github
+
+# Infra/docs are not needed inside the app image.
+infra
+docs
+*.md
+api.http
+
+# Local env / editor / logs
+.env
+.env.*
+*.log
+.idea
+.vscode
+.DS_Store
