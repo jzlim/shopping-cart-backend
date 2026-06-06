@@ -1,0 +1,40 @@
+# LOCAL DEVELOPMENT ONLY.
+#
+# This file gives an engineer a one-command way to boot the API in the exact
+# Node 20 Linux runtime, with the host's ./src bind-mounted in. It is NOT a
+# deployment mechanism — production ships the image from infra/docker/prod/
+# Dockerfile to the Terraform-defined infrastructure via the CD pipeline.
+#
+# Hot reload: tsx watches for fs *events*, which do not cross a Docker Desktop
+# bind mount on the Windows filesystem. On Windows, use `npm run dev` on the host
+# for the fast edit loop; this service is for environment parity. See
+# infra/docker/README.md ("Hot reload and the recommended dev loop").
+#
+# Usage (from the infra/ directory):
+#   docker compose up --build      # start with hot reload on http://localhost:3000
+#   docker compose down            # stop and remove
+
+# Pin the Compose project name so resources are named after the project rather
+# than the directory the file happens to sit in (which would default to "infra").
+# Container becomes "shopping-cart-backend-api-1", network "shopping-cart-backend_default".
+name: shopping-cart-backend
+
+services:
+  api:
+    build:
+      # Build context is the repo root so the Dockerfile can see package.json/src.
+      context: ..
+      dockerfile: infra/docker/dev/Dockerfile
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    volumes:
+      # Mount source for hot reload. node_modules is intentionally NOT mounted —
+      # the container keeps the Linux-built modules from its own image, avoiding
+      # host/OS mismatches (e.g. native binaries built on Windows).
+      - ../src:/app/src
+      - ../package.json:/app/package.json
+      - ../tsconfig.json:/app/tsconfig.json
+    command: npm run dev
