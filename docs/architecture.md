@@ -75,6 +75,34 @@ interface ProductCatalog {
 `CatalogProduct` carries the authoritative `name` and `unitPrice`. The cart
 **snapshots** these at add-time, so later catalog changes never mutate a cart.
 
+### Naming: `ProductCatalog`, not `ProductRepository`
+
+The two ports — and therefore their adapters, `InMemoryCartRepository` and
+`InMemoryProductCatalog` — carry deliberately different suffixes. The adapter file
+name simply mirrors the port it implements, so the question is really why one port
+is a `Repository` and the other a `Catalog`. Three reasons:
+
+- **Different DDD roles.** `CartRepository` is a *Repository* in the DDD sense: it
+  owns the lifecycle of an aggregate root (`Cart`), keyed by identity, with both
+  read (`findBySessionId`) and write (`save`). `ProductCatalog` is a **read-only
+  lookup of reference data** the system does not own or mutate — `findById` only,
+  no `save`.
+- **The interface shape reflects the role.** Naming the read-only port
+  `ProductRepository` would imply a write side and an ownership/lifecycle that does
+  not exist. `Catalog` is the precise, well-understood term in an e-commerce domain
+  for "a queryable collection of reference products."
+
+  | Port | Methods | Mutates? | Owns aggregate? |
+  |------|---------|----------|-----------------|
+  | `CartRepository` | `findBySessionId`, `save` | yes | yes (`Cart`) |
+  | `ProductCatalog` | `findById` | no | no (reference data) |
+
+- **The convention is still consistent.** The rule is *adapter = `<strategy><PortName>`*
+  (`InMemory` + port). The differing suffix is two intentionally different port
+  names, not an inconsistency. Renaming `ProductCatalog` → `ProductRepository` for
+  cosmetic uniformity was rejected: it would weaken the signal that one port is a
+  mutable aggregate store and the other read-only reference data.
+
 > **Why server-side lookup, not client-supplied price.** The client sends only
 > `{ productId, quantity }`. Trusting a client-supplied price would let a caller
 > set their own prices — a security flaw, not just a modelling one. Resolving
