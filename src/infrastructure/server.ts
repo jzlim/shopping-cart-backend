@@ -40,3 +40,19 @@ const shutdown = (signal: string): void => {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+/**
+ * Last-resort handlers for errors that escape the request lifecycle. The process
+ * is in an undefined state after these, so the only safe move is to log a
+ * structured line (rather than let Node print a raw stack) and exit non-zero,
+ * letting the orchestrator restart a clean process.
+ */
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception, exiting');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason }, 'Unhandled promise rejection, exiting');
+  process.exit(1);
+});
