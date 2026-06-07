@@ -92,8 +92,13 @@ There is exactly one aggregate: **`Cart`**, containing its `CartItem`s.
   items already present is rejected. This protects the total calculation.
 - Removing an item that is not in the cart raises an explicit `ItemNotFoundError`.
 - **Checkout on an empty cart is rejected.**
-- *(Could add later, currently out of scope:)* maximum quantity per line and
-  maximum distinct items per cart.
+- **Checkout empties the cart.** A successful checkout produces a
+  `CheckoutResult` snapshot and returns the cart to an empty state, ready for
+  reuse under the same `sessionId`. The cart carries no `status` field: in this
+  scope a checked-out cart is simply an empty one, which keeps the aggregate
+  small and avoids a lifecycle state machine with no consumer. (A persisted
+  `Order` aggregate with explicit status would be the natural extension — see the
+  rejected alternative under *aggregate boundaries*.)
 
 These rules live **inside the `Cart` aggregate** (and the value objects it uses),
 not in the use cases — the use cases orchestrate, the domain enforces.
@@ -110,6 +115,31 @@ binary operation guards that the currencies match (`CurrencyMismatchError`).
 > on purpose: integer minor units is the correct production choice, and flagging
 > the trade-off is more valuable than copying the sample.
 
+**Trade-offs of the integer-minor-units approach.** It is the right default, but
+it is not free:
+
+- **No sub-minor-unit precision.** Some domains price below the minor unit (fuel
+  at fractional cents, FX rates, per-unit costs that divide out). Integer cents
+  cannot represent these without a separate higher-precision type or scaling
+  factor.
+- **Division and rounding are still hard.** Integers remove *addition/multiplication*
+  float error, but splitting a total (discounts, tax, "divide evenly across N
+  lines") still requires an explicit rounding policy and remainder handling — the
+  problem is moved, not erased.
+- **Currency-specific exponents.** "Minor units" is not universally 1/100: JPY has
+  0 decimal places, BHD has 3. A single hard-coded ×100 assumption is wrong for
+  those; a correct implementation needs per-currency exponent metadata.
+- **Overflow ceiling.** JS `number` is exact only up to 2^53−1. Very large
+  aggregates (high-volume baskets, micro-priced goods) could in principle exceed
+  the safe-integer range, where `bigint` or a decimal library would be needed.
+- **Ergonomics at the boundary.** Inputs and outputs are usually decimal
+  (`19.99`), so every adapter/presenter must convert to and from minor units,
+  adding a small but real translation layer the float model would not need.
+
+For an in-memory cart in a single currency these costs are negligible, which is
+why the integer model wins here — but they are the reasons it is not an automatic
+choice in every monetary system.
+
 ### Should quantities have their own type?
 
 **Yes.** A `Quantity` value object puts the "positive integer" rule in exactly
@@ -121,6 +151,23 @@ its keep.
 > `CartItemName` VO would be ceremony with no invariant to protect. That line —
 > "wrap it only when there's a rule to enforce" — is how the model avoids
 > overengineering.
+
+### Domain events
+
+**None.** The model raises no domain events. Events earn their place when a state
+change must notify *decoupled* consumers — other aggregates, an integration bus,
+projections. This API has none of that: it is synchronous, single-process, and
+in-memory, and every operation already returns the new `Cart` (or
+`CheckoutResult`) directly to its caller. Emitting `ItemAddedToCart` /
+`CartCheckedOut` events with no subscriber would be ceremony — the same
+"wrap it only when there's a rule to enforce" discipline applied to behaviour.
+
+> **Where they would fit.** In a fuller system, `CartCheckedOut` is the obvious
+> first event: published at checkout to hand off to an order/fulfilment context
+> (reserve stock, create an `Order`, send a confirmation). That boundary is
+> already anticipated by returning a `CheckoutResult` value object rather than
+> mutating an `Order` here, so events can be added later without reshaping the
+> aggregate.
 
 ---
 

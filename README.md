@@ -51,6 +51,9 @@ object rather than a full `Order` aggregate (out of scope; noted as future work)
 - **Single currency per cart** — protects the total calculation.
 - Removing an absent item → `ItemNotFoundError`.
 - **Checkout on an empty cart is rejected.**
+- **Checkout empties the cart** — a successful checkout returns a `CheckoutResult`
+  snapshot and clears the cart for reuse under the same `sessionId` (no `status`
+  field; a checked-out cart is simply an empty one).
 
 ### Money
 
@@ -59,6 +62,12 @@ floating-point arithmetic makes money a correctness bug (`0.1 + 0.2 !== 0.3`).
 Operations (`add`, `multiply`) guard that currencies match. This is a
 **deliberate deviation** from the float-based example in `requirements.md`. (Type
 shown in the consolidated block below.)
+
+The integer approach is the right default but not free — division/rounding still
+needs an explicit policy, "minor units" isn't universally 1/100 (JPY=0, BHD=3),
+and decimal inputs/outputs need conversion at the boundary. See
+[`docs/domain-model.md`](./docs/domain-model.md#how-do-you-handle-money-calculations)
+for the full trade-off discussion.
 
 ### Quantity as its own type
 
@@ -121,7 +130,7 @@ createCart(sessionId): Cart;
 addItemToCart(cart, item): Cart;        // merge by productId; single-currency
 removeItemFromCart(cart, productId): Cart; // ItemNotFoundError if absent
 calculateTotal(cart): Money;            // Σ unitPrice × quantity, one currency
-checkoutCart(cart): CheckoutResult;     // EmptyCartError if empty
+checkoutCart(cart): { result: CheckoutResult; cart: Cart }; // EmptyCartError if empty; cart returned emptied
 ```
 
 ### Domain errors
