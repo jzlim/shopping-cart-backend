@@ -105,11 +105,23 @@ describe('Cart aggregate', () => {
   it('produces a checkout snapshot', () => {
     let cart = createCart('s1');
     cart = addItemToCart(cart, item('p1', 199, 3));
-    const result = checkoutCart(cart);
+    const { result } = checkoutCart(cart);
     expect(result.total).toEqual(createMoney(597, 'USD'));
     expect(result.itemCount).toBe(3);
     expect(result.lineItems).toHaveLength(1);
     expect(result.checkedOutAt).toBeInstanceOf(Date);
+  });
+
+  it('empties the cart on checkout, leaving the snapshot intact', () => {
+    let cart = createCart('s1');
+    cart = addItemToCart(cart, item('p1', 199, 3));
+    const { result, cart: emptied } = checkoutCart(cart);
+    expect(isCartEmpty(emptied)).toBe(true);
+    expect(emptied.sessionId).toBe('s1');
+    // the snapshot still holds the lines that were checked out
+    expect(result.lineItems).toHaveLength(1);
+    // a second checkout of the emptied cart is now rejected
+    expect(() => checkoutCart(emptied)).toThrow(EmptyCartError);
   });
 
   it('rejects checkout of an empty cart', () => {

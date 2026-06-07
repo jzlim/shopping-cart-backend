@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import { createApp } from './app.js';
+import { createLogger } from './logger.js';
 
 describe('Shopping cart API (integration)', () => {
   let app: Express;
 
   beforeEach(() => {
     // Fresh app per test → fresh in-memory storage, no cross-test bleed.
-    app = createApp();
+    // Silent logger keeps test output clean.
+    app = createApp({ logger: createLogger('silent') });
   });
 
   const session = 's-test';

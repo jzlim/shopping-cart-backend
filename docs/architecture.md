@@ -121,11 +121,17 @@ export const createAddItemToCart = (
   catalog: ProductCatalog,
 ): AddItemToCart => ({
   execute: async ({ sessionId, productId, quantity }) => {
-    const product = await catalog.findById(productId)
+    const id = createProductId(productId)             // VO factory validates the id
+    const product = await catalog.findById(id)
     if (!product) throw new ProductNotFoundError(productId)
 
     const cart = (await carts.findBySessionId(sessionId)) ?? createCart(sessionId)
-    const item = createCartItem(product, quantity)   // VO factories validate
+    const item = createCartItem({                     // VO factories validate
+      productId: product.productId,
+      name: product.name,
+      unitPrice: product.unitPrice,
+      quantity: createQuantity(quantity),
+    })
     const updated = addItemToCart(cart, item)         // aggregate enforces invariants
     await carts.save(updated)
     return updated
@@ -138,19 +144,21 @@ constructs concrete implementations and wires the graph:
 
 ```ts
 const carts = createInMemoryCartRepository()
-const catalog = createInMemoryProductCatalog(seedProducts)
+const catalog = createInMemoryProductCatalog() // default-seeded with demo products
 
-const useCases = {
+const cartController = createCartController({
   addItem: createAddItemToCart(carts, catalog),
   getCart: createGetCart(carts),
   checkout: createCheckoutCart(carts),
   removeItem: createRemoveItemFromCart(carts),
-}
-
-const controller = createCartController(useCases, cartPresenter)
+})
 ```
 
-Tests inject a real `InMemoryCartRepository` and a stub catalog — no mocks needed.
+The controller takes only its use cases; it imports the presenter functions
+directly rather than receiving them as a dependency — the presenter is a pure
+mapping with no state or alternate implementation to swap, so injecting it would
+add a seam that earns nothing. Tests inject a real `InMemoryCartRepository` and a
+stub catalog — no mocks needed.
 
 ## Request flow
 
@@ -212,6 +220,8 @@ imports an HTTP concept:
 |-------|------|
 | Zod validation failure | 400 Bad Request |
 | `InvalidQuantityError` | 400 Bad Request |
+| `InvalidProductIdError` | 400 Bad Request |
+| `InvalidMoneyError` | 400 Bad Request |
 | `CurrencyMismatchError` | 409 Conflict |
 | `ProductNotFoundError` | 404 Not Found |
 | `ItemNotFoundError` | 404 Not Found |

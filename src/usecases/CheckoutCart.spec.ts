@@ -32,6 +32,22 @@ describe('CheckoutCart use case', () => {
     expect(result.checkedOutAt).toBeInstanceOf(Date);
   });
 
+  it('empties the stored cart, so a second checkout is rejected', async () => {
+    const carts = createInMemoryCartRepository();
+    let cart = createCart('s1');
+    cart = addItemToCart(cart, lineFor('prod-a', 1000, 2));
+    await carts.save(cart);
+
+    const checkout = createCheckoutCart(carts);
+    await checkout.execute({ sessionId: 's1' });
+
+    const stored = await carts.findBySessionId('s1');
+    expect(stored?.items).toHaveLength(0);
+    await expect(checkout.execute({ sessionId: 's1' })).rejects.toThrow(
+      EmptyCartError,
+    );
+  });
+
   it('throws EmptyCartError for a session with no cart', async () => {
     const carts = createInMemoryCartRepository();
     await expect(

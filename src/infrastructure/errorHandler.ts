@@ -1,5 +1,6 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { ZodError } from 'zod';
+import type { Logger } from './logger.js';
 import {
   CurrencyMismatchError,
   DomainError,
@@ -45,36 +46,41 @@ const statusForDomainError = (error: DomainError): number => {
 
 /**
  * Single Express error-handling middleware. It is the only place domain errors
- * are translated to HTTP, so no inner layer ever imports an HTTP concept.
+ * are translated to HTTP, so no inner layer ever imports an HTTP concept. Built
+ * as a factory so the unexpected-error branch can log through the app's logger.
  */
-export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
-  if (err instanceof ZodError) {
+export const createErrorHandler = (logger: Logger): ErrorRequestHandler => {
+  return (err, _req, res, _next) => {
+    if (err instanceof ZodError) {
+      const body: ErrorResponse = {
+        error: {
+          type: 'ValidationError',
+          message: 'Request validation failed',
+          details: err.issues,
+        },
+      };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (err instanceof DomainError) {
+      const body: ErrorResponse = {
+        error: { type: err.name, message: err.message },
+      };
+      res.status(statusForDomainError(err)).json(body);
+      return;
+    }
+
+    // Unexpected: log the real error server-side, return a generic message.
+    logger.error({ err }, 'Unhandled error');
     const body: ErrorResponse = {
       error: {
-        type: 'ValidationError',
-        message: 'Request validation failed',
-        details: err.issues,
+        type: 'InternalServerError',
+        message: 'An unexpected error occurred',
       },
     };
-    res.status(400).json(body);
-    return;
-  }
-
-  if (err instanceof DomainError) {
-    const body: ErrorResponse = {
-      error: { type: err.name, message: err.message },
-    };
-    res.status(statusForDomainError(err)).json(body);
-    return;
-  }
-
-  const body: ErrorResponse = {
-    error: {
-      type: 'InternalServerError',
-      message: 'An unexpected error occurred',
-    },
+    res.status(500).json(body);
   };
-  res.status(500).json(body);
 };
 
 /** 404 handler for unmatched routes. */

@@ -20,7 +20,8 @@ import {
  *  - no duplicate product lines — re-adding a product merges quantities;
  *  - a single currency per cart — protects the total calculation;
  *  - removing an absent item raises `ItemNotFoundError`;
- *  - checkout on an empty cart is rejected.
+ *  - checkout on an empty cart is rejected, and a successful checkout empties
+ *    the cart.
  *
  * All operations are pure functions that return a new `Cart`; the value is never
  * mutated in place.
@@ -105,17 +106,31 @@ export const calculateTotal = (cart: Cart, currency = 'USD'): Money => {
 export const totalItemCount = (cart: Cart): number =>
   cart.items.reduce((count, item) => count + item.quantity.value, 0);
 
+/**
+ * The outcome of a checkout: the immutable `result` snapshot plus the `cart`
+ * left behind — emptied and ready for reuse under the same `sessionId`. Returned
+ * as a pair (rather than mutating) to keep the aggregate operation pure; the use
+ * case persists the emptied cart.
+ */
+export type CheckoutOutcome = {
+  readonly result: CheckoutResult;
+  readonly cart: Cart;
+};
+
 export const checkoutCart = (
   cart: Cart,
   now: Date = new Date(),
-): CheckoutResult => {
+): CheckoutOutcome => {
   if (isCartEmpty(cart)) {
     throw new EmptyCartError();
   }
   return {
-    lineItems: cart.items,
-    total: calculateTotal(cart),
-    itemCount: totalItemCount(cart),
-    checkedOutAt: now,
+    result: {
+      lineItems: cart.items,
+      total: calculateTotal(cart),
+      itemCount: totalItemCount(cart),
+      checkedOutAt: now,
+    },
+    cart: { ...cart, items: [], updatedAt: now },
   };
 };
