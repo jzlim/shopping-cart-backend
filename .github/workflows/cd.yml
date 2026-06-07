@@ -92,6 +92,47 @@ jobs:
           cache-from: type=gha,scope=prod
           cache-to: type=gha,scope=prod,mode=max
 
+      # --- PRODUCTION VARIANT: build once and push STRAIGHT to ECR --------------
+      # In production the image lives in ECR (the Terraform-defined registry) so the
+      # private task can pull it over VPC endpoints with no internet egress. The
+      # correct shape is to build once and push directly to ECR — NOT push to GHCR
+      # and copy it over afterwards. To switch, replace the three GHCR steps above
+      # (Log in to GHCR / Derive image tags / Build and push) with the steps below
+      # and add `id-token: write` to this job's `permissions` (needed for OIDC).
+      #
+      # permissions:
+      #   contents: read
+      #   id-token: write            # mint the OIDC token AWS exchanges for creds
+      #
+      # outputs:
+      #   image-tag: ${{ github.sha }}   # plain SHA — matches the deploy ref below
+      #
+      # - name: Configure AWS credentials (OIDC — no stored keys)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      #
+      # - name: Log in to Amazon ECR
+      #   id: ecr
+      #   uses: aws-actions/amazon-ecr-login@v2   # exposes steps.ecr.outputs.registry
+      #
+      # - name: Build and push to ECR
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: .
+      #     file: infra/docker/prod/Dockerfile
+      #     platforms: linux/amd64
+      #     provenance: false
+      #     push: true
+      #     # Tag with the plain commit SHA (+ latest) so the deploy job's
+      #     # `$ECR_URL:${{ github.sha }}` reference matches exactly.
+      #     tags: |
+      #       ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+      #       ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:latest
+      #     cache-from: type=gha,scope=prod
+      #     cache-to: type=gha,scope=prod,mode=max
+
   # ---------------------------------------------------------------------------
   # Deploy — DOCUMENTED dry-run. Shows exactly how the pushed image would roll out
   # to the ECS Fargate service defined in infra/terraform. The real AWS steps are
@@ -109,18 +150,25 @@ jobs:
         env:
           IMAGE_REF: ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.image-tag }}
         run: |
-          echo "Image built and pushed: $IMAGE_REF"
+          echo "Image built and pushed (demo registry, GHCR): $IMAGE_REF"
           echo ""
           echo "How this would deploy to the Terraform-defined ECS Fargate service:"
+          echo "  Build job: built the image once and pushed it STRAIGHT to ECR (the"
+          echo "  Terraform-defined registry) so the private task can pull it over VPC"
+          echo "  endpoints — no internet egress, no GHCR-then-copy step."
+          echo ""
           echo "  1. Assume an AWS deploy role via OIDC (no long-lived keys)."
-          echo "  2. Register a new ECS task definition revision pointing at \$IMAGE_REF."
+          echo "  2. Register a new ECS task definition revision pointing at the ECR image."
           echo "  3. Update the ECS service to the new revision and force a new deployment."
           echo "  4. Wait for the service to reach a steady state, then verify /health."
           echo ""
-          echo "Cluster/service/task names come from infra/terraform outputs"
-          echo "(ecs_cluster_name, ecs_service_name) — single source of truth."
+          echo "Registry/cluster/service names come from infra/terraform outputs"
+          echo "(ecr_repository_url, ecs_cluster_name, ecs_service_name) — single source of truth."
 
       # --- The real deployment, commented out (no live infra in this assessment) ---
+      #
+      # The image is already in ECR (the build-and-push PRODUCTION VARIANT pushes it
+      # there directly), so this job only assumes a role and rolls the new image out.
       #
       # - name: Configure AWS credentials (OIDC — no stored keys)
       #   uses: aws-actions/configure-aws-credentials@v4
@@ -128,17 +176,21 @@ jobs:
       #     role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
       #     aws-region: ${{ secrets.AWS_REGION }}
       #
-      # - name: Force a new ECS deployment with the new image
-      #   env:
-      #     IMAGE_REF: ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.image-tag }}
+      # - name: Register a new task definition revision and roll it out
       #   run: |
-      #     # Pull current task def from Terraform output, swap in the new image,
-      #     # register a new revision, and point the service at it:
-      #     aws ecs update-service \
-      #       --cluster   "$(terraform -chdir=infra/terraform output -raw ecs_cluster_name)" \
-      #       --service   "$(terraform -chdir=infra/terraform output -raw ecs_service_name)" \
-      #       --force-new-deployment
+      #     CLUSTER="$(terraform -chdir=infra/terraform output -raw ecs_cluster_name)"
+      #     SERVICE="$(terraform -chdir=infra/terraform output -raw ecs_service_name)"
+      #     ECR_URL="$(terraform -chdir=infra/terraform output -raw ecr_repository_url)"
       #
-      #     aws ecs wait services-stable \
-      #       --cluster "$(terraform -chdir=infra/terraform output -raw ecs_cluster_name)" \
-      #       --services "$(terraform -chdir=infra/terraform output -raw ecs_service_name)"
+      #     # Take the current task def, swap in the new image, register it as a new
+      #     # revision, then point the service at that revision:
+      #     TASK_DEF=$(aws ecs describe-task-definition --task-definition "$SERVICE" --query taskDefinition)
+      #     NEW_DEF=$(echo "$TASK_DEF" | jq --arg IMG "$ECR_URL:${{ github.sha }}" \
+      #       '.containerDefinitions[0].image = $IMG
+      #        | {family,taskRoleArn,executionRoleArn,networkMode,containerDefinitions,requiresCompatibilities,cpu,memory}')
+      #     NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_DEF" \
+      #       --query taskDefinition.taskDefinitionArn --output text)
+      #
+      #     aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+      #       --task-definition "$NEW_ARN" --force-new-deployment
+      #     aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
