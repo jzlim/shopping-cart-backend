@@ -518,6 +518,12 @@ The route's `:itemId` **is** the `productId` (line items are keyed by product).
 
 Prices are **integer minor units** (cents): `7999` = `$79.99`.
 
+> **Try it in seconds.** [`api.http`](./api.http) is a ready-to-run request
+> collection covering the full happy path (add → merge → get → remove → checkout)
+> and every error case. Open it in VS Code with the **REST Client** extension (or
+> JetBrains' built-in HTTP client) and click _Send Request_ above any block — no
+> Postman, no account, no extra tooling. Start the server first with `npm run dev`.
+
 ### Seeded catalog products
 
 The in-memory catalog is seeded with these products (USD):
