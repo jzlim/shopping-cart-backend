@@ -175,7 +175,10 @@ in-memory, and every operation already returns the new `Cart` (or
 
 Explicit, named errors raised by the domain (not generic `Error`):
 
-- `InvalidQuantityError`
+- `InvalidQuantityError` — raised when a `Quantity` is not a positive integer.
+- `InvalidMoneyError` — raised when a `Money` value is invalid (e.g. a negative
+  or non-integer minor-unit amount).
+- `InvalidProductIdError` — raised when a `ProductId` is not a non-empty string.
 - `CurrencyMismatchError`
 - `ItemNotFoundError`
 - `EmptyCartError`
